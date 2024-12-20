@@ -1,0 +1,64 @@
+// TFmini Plus LIDAR interface for ESP32
+#include <HardwareSerial.h>
+
+// Using ESP32's second hardware serial port (UART2)
+HardwareSerial TFmini(2);  // UART2 (GPIO16 = RX, GPIO17 = TX)
+
+struct {
+  uint16_t distance = 0;
+  uint16_t strength = 0;
+  uint16_t temperature = 0;
+  uint8_t checksum = 0;
+} tfminiData;
+
+void setup() {
+  // Initialize serial ports
+  Serial.begin(115200);     // Start USB serial monitor
+  TFmini.begin(115200, SERIAL_8N1, 16, 17);  // Start TFmini sensor serial
+  
+  Serial.println("TFmini Plus LIDAR Started on ESP32");
+}
+
+void loop() {
+  if (readDistance()) {
+    Serial.print("Distance = ");
+    Serial.print(tfminiData.distance);
+    Serial.print(" cm");
+    Serial.print("\t Strength = ");
+    Serial.println(tfminiData.strength);
+  }
+  delay(50);  // Small delay between readings
+}
+
+// Read TFmini data
+bool readDistance() {
+  uint8_t readBuffer[9];  // Buffer for sensor data
+  
+  // Wait for packet header
+  while (TFmini.available() >= 9) {
+    if (TFmini.read() == 0x59) {
+      if (TFmini.read() == 0x59) {
+        // Read the rest of the packet
+        readBuffer[0] = 0x59;
+        readBuffer[1] = 0x59;
+        for (uint8_t i = 2; i < 9; i++) {
+          readBuffer[i] = TFmini.read();
+        }
+        
+        // Calculate checksum
+        uint8_t checksum = 0;
+        for (uint8_t i = 0; i < 8; i++) {
+          checksum += readBuffer[i];
+        }
+        
+        // If checksum matches
+        if (checksum == readBuffer[8]) {
+          tfminiData.distance = readBuffer[2] | (readBuffer[3] << 8);
+          tfminiData.strength = readBuffer[4] | (readBuffer[5] << 8);
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
