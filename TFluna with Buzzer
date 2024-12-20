@@ -1,0 +1,78 @@
+// TFmini Plus with distance threshold buzzer alert
+#include <HardwareSerial.h>
+
+// Pin Definitions
+const int BUZZER_PIN = 25;        // Buzzer connected to GPIO25
+const int DISTANCE_THRESHOLD = 50; // Alert threshold in centimeters
+
+// Using ESP32's second hardware serial port for TFmini
+HardwareSerial TFmini(2);  // UART2 (GPIO16 = RX, GPIO17 = TX)
+
+struct {
+    uint16_t distance = 0;
+    uint16_t strength = 0;
+} tfminiData;
+
+void setup() {
+    // Initialize Serial Monitor
+    Serial.begin(115200);
+    
+    // Initialize TFmini
+    TFmini.begin(115200, SERIAL_8N1, 16, 17);
+    
+    // Initialize Buzzer
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    
+    Serial.println("TFmini Distance Alert System Started");
+    Serial.print("Alert Threshold: ");
+    Serial.print(DISTANCE_THRESHOLD);
+    Serial.println(" cm");
+}
+
+void loop() {
+    if (readDistance()) {
+        // Print the current distance
+        Serial.print("Distance: ");
+        Serial.print(tfminiData.distance);
+        Serial.println(" cm");
+        
+        // Check if distance exceeds threshold
+        if (tfminiData.distance > DISTANCE_THRESHOLD && tfminiData.strength > 100) {
+            // Object is beyond threshold - activate buzzer
+            digitalWrite(BUZZER_PIN, HIGH);
+            Serial.println("Alert: Object beyond threshold!");
+        } else {
+            // Object is within threshold or signal too weak - silence buzzer
+            digitalWrite(BUZZER_PIN, LOW);
+        }
+    }
+    
+    delay(50); // Small delay between readings
+}
+
+// Read data from TFmini
+bool readDistance() {
+    if (TFmini.available() >= 9) {
+        if (TFmini.read() == 0x59) {
+            if (TFmini.read() == 0x59) {
+                uint8_t buffer[7];
+                TFmini.readBytes(buffer, 7);
+                
+                // Calculate checksum
+                uint8_t checksum = 0x59 + 0x59;
+                for (int i = 0; i < 6; i++) {
+                    checksum += buffer[i];
+                }
+                
+                // Verify checksum
+                if (checksum == buffer[6]) {
+                    tfminiData.distance = buffer[0] | (buffer[1] << 8);
+                    tfminiData.strength = buffer[2] | (buffer[3] << 8);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
