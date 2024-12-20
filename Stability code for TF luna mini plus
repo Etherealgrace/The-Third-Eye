@@ -1,0 +1,148 @@
+// Stabilized TFmini Plus LIDAR interface for ESP32
+#include <HardwareSerial.h>
+
+// Using ESP32's second hardware serial port
+HardwareSerial TFmini(2);  // UART2 (GPIO16 = RX, GPIO17 = TX)
+
+// Constants for filtering
+const int WINDOW_SIZE = 10;         // Moving average window size
+const float OUTLIER_THRESHOLD = 50; // Maximum allowed change between readings (cm)
+const int MIN_VALID_DISTANCE = 10;  // Minimum valid distance (cm)
+const int MAX_VALID_DISTANCE = 1200; // Maximum valid distance (cm)
+
+// Variables for storing readings
+int distances[WINDOW_SIZE];
+int strengths[WINDOW_SIZE];
+int currentIndex = 0;
+float filteredDistance = 0;
+bool isInitialized = false;
+
+// Kalman filter variables
+float kalmanDistance = 0;
+float kalmanCovariance = 1;
+const float measurementNoise = 2.0;  // Adjust based on sensor noise
+const float processNoise = 0.1;      // Adjust based on movement speed
+
+struct {
+    uint16_t distance = 0;
+    uint16_t strength = 0;
+    uint8_t checksum = 0;
+} tfminiData;
+
+void setup() {
+    Serial.begin(115200);     // Start USB serial monitor
+    TFmini.begin(115200, SERIAL_8N1, 16, 17);  // Start TFmini sensor serial
+    
+    // Initialize arrays
+    for(int i = 0; i < WINDOW_SIZE; i++) {
+        distances[i] = 0;
+        strengths[i] = 0;
+    }
+    
+    Serial.println("Stabilized TFmini Started");
+}
+
+void loop() {
+    if (readDistance()) {
+        // Apply stability filtering
+        float stableDistance = stabilizeReading(tfminiData.distance, tfminiData.strength);
+        
+        // Print results
+        Serial.print("Raw Distance: ");
+        Serial.print(tfminiData.distance);
+        Serial.print(" cm\tStabilized Distance: ");
+        Serial.print(stableDistance);
+        Serial.print(" cm\tStrength: ");
+        Serial.println(tfminiData.strength);
+    }
+    delay(20); // Small delay between readings
+}
+
+// Read TFmini data
+bool readDistance() {
+    if (TFmini.available() >= 9) {
+        if (TFmini.read() == 0x59) {
+            if (TFmini.read() == 0x59) {
+                uint8_t buffer[7];
+                TFmini.readBytes(buffer, 7);
+                
+                // Calculate checksum
+                uint8_t checksum = 0x59 + 0x59;
+                for (int i = 0; i < 6; i++) {
+                    checksum += buffer[i];
+                }
+                
+                // Verify checksum
+                if (checksum == buffer[6]) {
+                    tfminiData.distance = buffer[0] | (buffer[1] << 8);
+                    tfminiData.strength = buffer[2] | (buffer[3] << 8);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Apply Kalman filter to a single reading
+float kalmanFilter(float measurement) {
+    // Prediction
+    float predictedCovariance = kalmanCovariance + processNoise;
+    
+    // Update
+    float kalmanGain = predictedCovariance / (predictedCovariance + measurementNoise);
+    kalmanDistance = kalmanDistance + kalmanGain * (measurement - kalmanDistance);
+    kalmanCovariance = (1 - kalmanGain) * predictedCovariance;
+    
+    return kalmanDistance;
+}
+
+// Check if a reading is valid
+bool isValidReading(int distance, int strength) {
+    return (distance >= MIN_VALID_DISTANCE && 
+            distance <= MAX_VALID_DISTANCE && 
+            strength > 100);  // Minimum signal strength threshold
+}
+
+// Stabilize reading using multiple filtering techniques
+float stabilizeReading(int rawDistance, int strength) {
+    // First, check if reading is valid
+    if (!isValidReading(rawDistance, strength)) {
+        return filteredDistance;  // Return last valid filtered distance
+    }
+    
+    // Add to circular buffer
+    distances[currentIndex] = rawDistance;
+    strengths[currentIndex] = strength;
+    
+    // Calculate median of last readings
+    int tempDistances[WINDOW_SIZE];
+    memcpy(tempDistances, distances, sizeof(distances));
+    for(int i = 0; i < WINDOW_SIZE-1; i++) {
+        for(int j = i+1; j < WINDOW_SIZE; j++) {
+            if(tempDistances[i] > tempDistances[j]) {
+                int temp = tempDistances[i];
+                tempDistances[i] = tempDistances[j];
+                tempDistances[j] = temp;
+            }
+        }
+    }
+    float medianDistance = tempDistances[WINDOW_SIZE/2];
+    
+    // Update index
+    currentIndex = (currentIndex + 1) % WINDOW_SIZE;
+    
+    // Apply Kalman filter to median value
+    float stabilizedDistance = kalmanFilter(medianDistance);
+    
+    // Additional outlier rejection
+    if (!isInitialized) {
+        filteredDistance = stabilizedDistance;
+        isInitialized = true;
+    } else if (abs(stabilizedDistance - filteredDistance) < OUTLIER_THRESHOLD) {
+        // Exponential moving average
+        filteredDistance = 0.7 * filteredDistance + 0.3 * stabilizedDistance;
+    }
+    
+    return filteredDistance;
+}
