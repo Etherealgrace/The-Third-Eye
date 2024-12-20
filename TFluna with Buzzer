@@ -1,30 +1,31 @@
-// TFmini Plus with distance threshold buzzer alert
+// TF-Luna proximity alert with buzzer
 #include <HardwareSerial.h>
 
 // Pin Definitions
 const int BUZZER_PIN = 25;        // Buzzer connected to GPIO25
-const int DISTANCE_THRESHOLD = 50; // Alert threshold in centimeters
+const int DISTANCE_THRESHOLD = 25; // Alert threshold in centimeters
 
-// Using ESP32's second hardware serial port for TFmini
-HardwareSerial TFmini(2);  // UART2 (GPIO16 = RX, GPIO17 = TX)
+// Using ESP32's second hardware serial port for TF-Luna
+HardwareSerial TFLuna(2);  // UART2 (GPIO16 = RX, GPIO17 = TX)
 
 struct {
     uint16_t distance = 0;
     uint16_t strength = 0;
-} tfminiData;
+    uint16_t temperature = 0;
+} tflunaData;
 
 void setup() {
     // Initialize Serial Monitor
     Serial.begin(115200);
     
-    // Initialize TFmini
-    TFmini.begin(115200, SERIAL_8N1, 16, 17);
+    // Initialize TF-Luna
+    TFLuna.begin(115200, SERIAL_8N1, 16, 17);
     
     // Initialize Buzzer
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
     
-    Serial.println("TFmini Distance Alert System Started");
+    Serial.println("TF-Luna Proximity Alert System Started");
     Serial.print("Alert Threshold: ");
     Serial.print(DISTANCE_THRESHOLD);
     Serial.println(" cm");
@@ -34,16 +35,17 @@ void loop() {
     if (readDistance()) {
         // Print the current distance
         Serial.print("Distance: ");
-        Serial.print(tfminiData.distance);
-        Serial.println(" cm");
+        Serial.print(tflunaData.distance);
+        Serial.print(" cm\tSignal: ");
+        Serial.println(tflunaData.strength);
         
-        // Check if distance exceeds threshold
-        if (tfminiData.distance > DISTANCE_THRESHOLD && tfminiData.strength > 100) {
-            // Object is beyond threshold - activate buzzer
+        // Check if distance is less than threshold
+        if (tflunaData.distance < DISTANCE_THRESHOLD && tflunaData.strength > 100) {
+            // Object is too close - activate buzzer
             digitalWrite(BUZZER_PIN, HIGH);
-            Serial.println("Alert: Object beyond threshold!");
+            Serial.println("Alert: Object too close!");
         } else {
-            // Object is within threshold or signal too weak - silence buzzer
+            // Object is beyond safe distance or signal too weak - silence buzzer
             digitalWrite(BUZZER_PIN, LOW);
         }
     }
@@ -51,13 +53,13 @@ void loop() {
     delay(50); // Small delay between readings
 }
 
-// Read data from TFmini
+// Read data from TF-Luna
 bool readDistance() {
-    if (TFmini.available() >= 9) {
-        if (TFmini.read() == 0x59) {
-            if (TFmini.read() == 0x59) {
+    while (TFLuna.available() >= 9) {
+        if (TFLuna.read() == 0x59) {
+            if (TFLuna.read() == 0x59) {
                 uint8_t buffer[7];
-                TFmini.readBytes(buffer, 7);
+                TFLuna.readBytes(buffer, 7);
                 
                 // Calculate checksum
                 uint8_t checksum = 0x59 + 0x59;
@@ -67,9 +69,14 @@ bool readDistance() {
                 
                 // Verify checksum
                 if (checksum == buffer[6]) {
-                    tfminiData.distance = buffer[0] | (buffer[1] << 8);
-                    tfminiData.strength = buffer[2] | (buffer[3] << 8);
-                    return true;
+                    tflunaData.distance = buffer[0] | (buffer[1] << 8);
+                    tflunaData.strength = buffer[2] | (buffer[3] << 8);
+                    tflunaData.temperature = buffer[4] | (buffer[5] << 8);
+                    
+                    // Additional validation
+                    if (tflunaData.distance <= 800) { // Max reliable range
+                        return true;
+                    }
                 }
             }
         }
