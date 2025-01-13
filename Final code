@@ -1,0 +1,231 @@
+#include <HardwareSerial.h>
+#include "Arduino.h"
+#include "DFRobotDFPlayerMini.h"
+
+// Using ESP32's default UART0 (RX0 = GPIO3, TX0 = GPIO1) and UART2 (RX2 = GPIO16, TX2 = GPIO17)
+HardwareSerial TFLuna2(2); // UART2 for second TF-Luna sensor
+
+#define STOP_THRESHOLD 35
+#define SLOW_DOWN_THRESHOLD 70
+#define SLOW_SLOW_THRESHOLD 100
+#define TIME_THRESHOLD1 600
+#define TIME_THRESHOLD2 600
+#define TIME_THRESHOLD3 600
+
+bool check = true;
+
+// Timer variables
+unsigned long stopTimer = 0;
+unsigned long slowDownTimer = 0;
+unsigned long slowSlowTimer = 0;
+unsigned long timer = 0;
+
+// Struct for LiDAR data
+struct LiDARData {
+  uint16_t distance = 0;
+  uint16_t strength = 0;
+  uint8_t checksum = 0;
+} tflunaData1, tflunaData2;
+
+#define FPSerial Serial1
+DFRobotDFPlayerMini myDFPlayer;
+
+// Function prototypes
+bool readDistance(HardwareSerial &serialPort, LiDARData &data);
+void handleTimerActions(int distance);
+void printDetail(uint8_t type, int value);
+void displayMessage(const char *message);
+void playTrack(uint8_t trackNumber, const char *message);
+
+void setup() {
+  // Initialize serial ports
+  pinMode(21,OUTPUT);
+  Serial.begin(115200);
+  TFLuna2.begin(115200, SERIAL_8N1, 16, 17); // Start second TF-Luna sensor on UART2
+  FPSerial.begin(9600, SERIAL_8N1, /rx=/22, /tx=/23);
+
+  Serial.println(F("Initializing DFPlayer Mini..."));
+  if (!myDFPlayer.begin(FPSerial, /isACK=/true, /doReset=/true)) {
+    Serial.println(F("Unable to initialize DFPlayer. Check connections and SD card."));
+    while (true) delay(10);
+  }
+  myDFPlayer.volume(9);
+  Serial.println(F("DFPlayer Mini initialized."));
+}
+
+void loop() {
+  if (myDFPlayer.available()) {
+    printDetail(myDFPlayer.readType(), myDFPlayer.read());
+  }
+
+  int distance1 = 0, distance2 = 0;
+  if (readDistance(Serial, tflunaData1)) {
+    distance1 = tflunaData1.distance;
+  }
+
+  if (readDistance(TFLuna2, tflunaData2)) {
+    distance2 = tflunaData2.distance;
+  }
+  if(timer!=0){
+    if(millis()-timer>2000){
+      check=true;
+      timer=0;
+    }
+  }
+  if(check){
+  int distance = min(distance1, distance2);
+  Serial.println(distance);
+  handleTimerActions(distance);
+  }
+  delay(10); // Small delay between readings
+}
+void beep(){
+  for(int i=1;i<=20;i++){
+    digitalWrite(21,HIGH);
+    delay(50);
+    digitalWrite(21,LOW);
+    delay(50);
+  }
+}
+bool readDistance(HardwareSerial &serialPort, LiDARData &data) {
+  uint8_t readBuffer[9]; // Buffer for sensor data
+
+  // Wait for packet header
+  while (serialPort.available() >= 9) {
+    if (serialPort.read() == 0x59 && serialPort.read() == 0x59) {
+      // Read the rest of the packet
+      readBuffer[0] = 0x59;
+      readBuffer[1] = 0x59;
+      for (uint8_t i = 2; i < 9; i++) {
+        readBuffer[i] = serialPort.read();
+      }
+
+      // Calculate checksum
+      uint8_t checksum = 0;
+      for (uint8_t i = 0; i < 8; i++) {
+        checksum += readBuffer[i];
+      }
+
+      // Validate checksum
+      if (checksum == readBuffer[8]) {
+        data.distance = readBuffer[2] | (readBuffer[3] << 8);
+        data.strength = readBuffer[4] | (readBuffer[5] << 8);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void handleTimerActions(int distance) {
+  
+  if (distance <= STOP_THRESHOLD) {
+    if (stopTimer == 0) stopTimer = millis();
+    if (millis() - stopTimer >= TIME_THRESHOLD3) {
+      check = false;
+      playTrack(3, "STOP");
+      beep();
+      if(timer==0)
+      timer=millis();
+    }
+  } else {
+    stopTimer = 0;
+  }
+
+  if (distance > STOP_THRESHOLD && distance <= SLOW_DOWN_THRESHOLD) {
+    if (slowDownTimer == 0) slowDownTimer = millis();
+    if (millis() - slowDownTimer >= TIME_THRESHOLD2) {
+      check = false;
+      playTrack(2, "Slow");
+      delay(50);
+      if(timer==0)
+      timer=millis();
+    }
+  } else {
+    slowDownTimer = 0;
+  }
+
+  if (distance > SLOW_DOWN_THRESHOLD && distance <= SLOW_SLOW_THRESHOLD) {
+    if (slowSlowTimer == 0) slowSlowTimer = millis();
+    if (millis() - slowSlowTimer >= TIME_THRESHOLD1) {
+      check = false;
+      playTrack(1, "OBJECT");
+      delay(50);
+      if(timer==0)
+      timer=millis();
+    }
+  } else {
+    slowSlowTimer = 0;
+  }
+}
+
+void playTrack(uint8_t trackNumber, const char *message) {
+  myDFPlayer.play(trackNumber);
+  displayMessage(message);
+}
+
+void displayMessage(const char *message) {
+  Serial.println(message);
+}
+
+void printDetail(uint8_t type, int value) {
+  // Handle DFPlayer messages (unchanged)
+  switch (type) {
+    case TimeOut:
+      Serial.println(F("Time Out!"));
+      break;
+    case WrongStack:
+      Serial.println(F("Stack Wrong!"));
+      break;
+    case DFPlayerCardInserted:
+      Serial.println(F("Card Inserted!"));
+      break;
+    case DFPlayerCardRemoved:
+      Serial.println(F("Card Removed!"));
+      break;
+    case DFPlayerCardOnline:
+      Serial.println(F("Card Online!"));
+      break;
+    case DFPlayerUSBInserted:
+      Serial.println("USB Inserted!");
+      break;
+    case DFPlayerUSBRemoved:
+      Serial.println("USB Removed!");
+      break;
+    case DFPlayerPlayFinished:
+      Serial.print(F("Number:"));
+      Serial.print(value);
+      Serial.println(F(" Play Finished!"));
+      break;
+    case DFPlayerError:
+      Serial.print(F("DFPlayerError:"));
+      switch (value) {
+        case Busy:
+          Serial.println(F("Card not found"));
+          break;
+        case Sleeping:
+          Serial.println(F("Sleeping"));
+          break;
+        case SerialWrongStack:
+          Serial.println(F("Get Wrong Stack"));
+          break;
+        case CheckSumNotMatch:
+          Serial.println(F("Check Sum Not Match"));
+          break;
+        case FileIndexOut:
+          Serial.println(F("File Index Out of Bound"));
+          break;
+        case FileMismatch:
+          Serial.println(F("Cannot Find File"));
+          break;
+        case Advertise:
+          Serial.println(F("In Advertise"));
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+}
